@@ -29,6 +29,61 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
+
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+/// A supplier feed the merchant has connected.
+///
+/// Scoped by `shop` because one deployment serves many stores — unlike the
+/// single-store scripts this project's sibling repo contains, every query
+/// here must filter by shop or one merchant sees another's data.
+model FeedConnection {
+  id   String @id @default(uuid())
+  shop String
+
+  name String
+  url  String
+
+  /// csv is the only supported format for now. XML, JSON, and FTP are
+  /// roadmap items; the parsing layer is the only part that differs.
+  format String @default("csv")
+
+  /// Set false to stop syncing without losing the configuration and history.
+  enabled Boolean @default(true)
+
+  lastFetchedAt DateTime?
+  lastRowCount  Int?
+  lastError     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs FeedRun[]
+
+  @@index([shop])
+}
+
+/// One row per fetch attempt. Records failures as well as successes — a
+/// feed that silently stopped updating is the failure merchants notice last
+/// and care about most.
+model FeedRun {
+  id     String @id @default(uuid())
+  feedId String
+
+  /// running | completed | failed
+  status String @default("running")
+
+  rowCount    Int?
+  columnNames String?
+  bytes       Int?
+  error       String?
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  feed FeedConnection @relation(fields: [feedId], references: [id], onDelete: Cascade)
+
+  @@index([feedId, startedAt])
 }
