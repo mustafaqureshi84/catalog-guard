@@ -60,7 +60,8 @@ model FeedConnection {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  runs FeedRun[]
+  runs     FeedRun[]
+  mappings FieldMapping[]
 
   @@index([shop])
 }
@@ -86,4 +87,41 @@ model FeedRun {
   feed FeedConnection @relation(fields: [feedId], references: [id], onDelete: Cascade)
 
   @@index([feedId, startedAt])
+}
+
+/// Maps one supplier column to one Shopify field, and records who owns it.
+///
+/// Ownership is the point of the product. A merchant will not hand 4,000
+/// records to automation unless they can say "the supplier controls price
+/// and stock; nothing touches my titles."
+///
+/// The unique constraint on (feedId, targetField) allows only one supplier
+/// column per Shopify field. Two columns competing for the same target is a
+/// conflict with no obvious resolution, so it is rejected at the schema
+/// level rather than resolved at write time.
+model FieldMapping {
+  id     String @id @default(uuid())
+  feedId String
+
+  /// Column name as it appears in the CSV, lowercased and trimmed to match
+  /// the parser's transformHeader.
+  sourceColumn String
+
+  /// Shopify field: sku | price | compareAtPrice | cost | inventory | barcode
+  targetField String
+
+  /// supplier — the feed may write this field
+  /// merchant  — the feed may never write this field, whatever it contains
+  owner String @default("supplier")
+
+  /// string | decimal | integer. Every CSV value arrives as a string, so
+  /// coercion is a decision made here rather than inferred at write time.
+  dataType String @default("string")
+
+  createdAt DateTime @default(now())
+
+  feed FeedConnection @relation(fields: [feedId], references: [id], onDelete: Cascade)
+
+  @@unique([feedId, targetField])
+  @@index([feedId])
 }

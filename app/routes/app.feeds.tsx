@@ -15,6 +15,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         orderBy: { startedAt: "desc" },
         take: 1,
       },
+      mappings: true,
     },
   });
 
@@ -166,6 +167,12 @@ export default function Feeds() {
   const { feeds } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
+  /**
+   * Navigation inside an embedded app goes through the router, not an anchor.
+   * A plain <a> or <s-link> pointing at the tunnel URL either does nothing or
+   * breaks out of the iframe, losing the App Bridge context and session.
+   */
+
   const isBusy = fetcher.state !== "idle";
 
   return (
@@ -234,7 +241,23 @@ export default function Feeds() {
                       <s-text>Columns: {lastRun.columnNames}</s-text>
                     )}
 
+                    <s-text>
+                      {feed.mappings.length === 0
+                        ? "No field mappings configured"
+                        : `${feed.mappings.length} field mapping(s)`}
+                    </s-text>
+
                     <s-stack direction="inline" gap="small-200">
+                      {/*
+  A plain form GET rather than an onClick handler. React's synthetic events
+  do not reliably bind to Polaris web components — the two working buttons
+  on this page are type="submit" inside forms, which is native browser
+  behaviour with no React listener involved.
+*/}
+<form action={`/app/feeds/${feed.id}`} method="get">
+  <s-button type="submit">Configure</s-button>
+</form>
+
                       <fetcher.Form method="post">
                         <input type="hidden" name="intent" value="fetch" />
                         <input type="hidden" name="feedId" value={feed.id} />
