@@ -1,0 +1,28 @@
+{
+  "payload": {
+    "export": "cart-lines-discounts-generate-run",
+    "target": "cart.lines.discounts.generate.run",
+    "input": {
+      "cart": {
+        "lines": [
+          {
+            "id": "gid://shopify/CartLine/0",
+            "quantity": 12,
+            "cost": { "subtotalAmount": { "amount": "1079.88" } },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/1",
+              "sku": "AL-00500-0",
+              "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Alloy Binding 00500"
+              }
+            }
+          }
+        ]
+      },
+      "discount": { "discountClasses": ["ORDER"] }
+    },
+    "output": { "operations": [] }
+  }
+}

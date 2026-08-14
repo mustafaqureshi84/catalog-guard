@@ -1,0 +1,101 @@
+{
+  "payload": {
+    "export": "cart-lines-discounts-generate-run",
+    "target": "cart.lines.discounts.generate.run",
+    "input": {
+      "cart": {
+        "lines": [
+          {
+            "id": "gid://shopify/CartLine/1",
+            "quantity": 12,
+            "cost": { "subtotalAmount": { "amount": "1079.88" } },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/1",
+              "sku": "AL-00500-0",
+              "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Alloy Binding 00500"
+              }
+            }
+          },
+          {
+            "id": "gid://shopify/CartLine/2",
+            "quantity": 6,
+            "cost": { "subtotalAmount": { "amount": "539.94" } },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/2",
+              "sku": "AL-00500-1",
+              "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Alloy Binding 00500"
+              }
+            }
+          },
+          {
+            "id": "gid://shopify/CartLine/3",
+            "quantity": 4,
+            "cost": { "subtotalAmount": { "amount": "359.96" } },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/3",
+              "sku": "AL-00500-2",
+              "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Alloy Binding 00500"
+              }
+            }
+          },
+          {
+            "id": "gid://shopify/CartLine/4",
+            "quantity": 1,
+            "cost": { "subtotalAmount": { "amount": "89.99" } },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "id": "gid://shopify/ProductVariant/4",
+              "sku": "AL-00500-3",
+              "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Alloy Binding 00500"
+              }
+            }
+          }
+        ]
+      },
+      "discount": { "discountClasses": ["PRODUCT"] }
+    },
+    "output": {
+      "operations": [
+        {
+          "productDiscountsAdd": {
+            "candidates": [
+              {
+                "message": "20% off 10+",
+                "targets": [
+                  { "cartLine": { "id": "gid://shopify/CartLine/1" } }
+                ],
+                "value": { "percentage": { "value": 20.0 } }
+              },
+              {
+                "message": "10% off 5+",
+                "targets": [
+                  { "cartLine": { "id": "gid://shopify/CartLine/2" } }
+                ],
+                "value": { "percentage": { "value": 10.0 } }
+              },
+              {
+                "message": "5% off 3+",
+                "targets": [
+                  { "cartLine": { "id": "gid://shopify/CartLine/3" } }
+                ],
+                "value": { "percentage": { "value": 5.0 } }
+              }
+            ],
+            "selectionStrategy": "ALL"
+          }
+        }
+      ]
+    }
+  }
+}
