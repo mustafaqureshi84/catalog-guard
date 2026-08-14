@@ -1,6 +1,6 @@
 {
-  "name": "[Example] Discount UI extension",
-  "description": "Discount UI extension",
+  "name": "Volume discount",
+  "description": "Buy more, pay less — configure quantity tiers for this discount.",
   "title": "Select which discount types to apply at checkout",
   "loading": "Loading...",
   "label": "Percentage off",

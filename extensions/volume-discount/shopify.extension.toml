@@ -7,6 +7,12 @@ type = "function"
 uid = "bb2f00de-e779-90e3-7141-d67d5d765661b27f22c4"
 description = "t:description"
 
+# Links this function to its settings extension. Without it the two are
+# unrelated as far as Shopify is concerned, and clicking the discount in the
+# admin has no settings page to render — it falls back to the app root.
+[extensions.ui]
+handle = "volume-discount-settings"
+
   [[extensions.targeting]]
   target = "cart.lines.discounts.generate.run"
   input_query = "src/cart_lines_discounts_generate_run.graphql"
