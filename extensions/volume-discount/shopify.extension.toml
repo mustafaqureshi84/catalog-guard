@@ -1,0 +1,22 @@
+api_version = "2026-07"
+
+[[extensions]]
+name = "t:name"
+handle = "volume-discount"
+type = "function"
+uid = "bb2f00de-e779-90e3-7141-d67d5d765661b27f22c4"
+description = "t:description"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart-lines-discounts-generate-run"
+
+  [[extensions.targeting]]
+  target = "cart.delivery-options.discounts.generate.run"
+  input_query = "src/cart_delivery_options_discounts_generate_run.graphql"
+  export = "cart-delivery-options-discounts-generate-run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"
