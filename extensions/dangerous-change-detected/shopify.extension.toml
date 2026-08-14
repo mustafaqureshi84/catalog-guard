@@ -1,0 +1,50 @@
+[[extensions]]
+name = "Catalog Guard — dangerous change detected"
+handle = "dangerous-change-detected"
+type = "flow_trigger"
+uid = "e3f5dce6-d6e0-dec6-072f-0edcca22e2d931020825"
+# Descriptions are capped at 140 characters. They appear in Flow's trigger
+# picker, so the limit is a UI constraint rather than an arbitrary one.
+description = "Fires when a supplier feed produces high-risk changes or trips the circuit breaker."
+
+# Property types are fixed at declaration and determine which operators a
+# merchant gets in Flow's condition builder. Declaring a count as
+# single_line_text_field produces a trigger that fires correctly but offers
+# only string operators — "equals 5" rather than "greater than 3", which is
+# the condition anyone would actually want.
+#
+# There is no integer type; counts go as number_decimal.
+#
+# Field keys accept only alphabetic characters and spaces, and are shown to
+# merchants verbatim.
+[settings]
+
+  [[settings.fields]]
+  type = "single_line_text_field"
+  key = "Feed name"
+  description = "Which supplier feed produced this run"
+
+  [[settings.fields]]
+  type = "number_decimal"
+  key = "High risk count"
+  description = "Number of changes graded high risk"
+
+  [[settings.fields]]
+  type = "number_decimal"
+  key = "Review count"
+  description = "Number of changes needing review"
+
+  [[settings.fields]]
+  type = "number_decimal"
+  key = "Matched rows"
+  description = "How many feed rows matched a variant in this store"
+
+  [[settings.fields]]
+  type = "boolean"
+  key = "Run blocked"
+  description = "True when the circuit breaker stopped the run"
+
+  [[settings.fields]]
+  type = "single_line_text_field"
+  key = "Top reason"
+  description = "The most severe reason, in plain language"

@@ -6,6 +6,7 @@ import { TARGET_FIELDS, typeForField } from "../lib/coerce";
 import { runShadow } from "../lib/shadow";
 import { applyChanges } from "../lib/apply";
 import { DEFAULT_POLICY } from "../lib/risk";
+import { fireDangerousChange } from "../lib/flow";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -195,7 +196,33 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         },
       });
 
-      return { shadowComplete: true };
+      /**
+       * Fire the Flow trigger only when there is something worth reacting to.
+       * A trigger that fires on every run trains merchants to ignore it,
+       * which is worse than not having one at all.
+       */
+      let flowFired = false;
+      let flowError: string | null = null;
+
+      if (result.fieldsHigh > 0 || result.runBlocked) {
+        const worst =
+          result.changes.find((c) => c.risk === "high" && c.riskReason)
+            ?.riskReason ?? "high-risk changes detected";
+
+        const fired = await fireDangerousChange(admin, {
+          feedName: feed.name,
+          highRiskCount: result.fieldsHigh,
+          reviewCount: result.fieldsReview,
+          matchedRows: result.rowsMatched,
+          runBlocked: result.runBlocked,
+          topReason: result.blockReason ?? worst,
+        });
+
+        flowFired = fired.ok;
+        flowError = fired.error;
+      }
+
+      return { shadowComplete: true, flowFired, flowError };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
 
@@ -328,6 +355,24 @@ export default function FeedMapping() {
         )}
 
         {fetcher.data &&
+          "flowFired" in fetcher.data &&
+          fetcher.data.flowFired && (
+            <s-banner tone="info" heading="Flow notified">
+              <s-paragraph>
+                A "dangerous change detected" event was sent to Shopify Flow.
+              </s-paragraph>
+            </s-banner>
+          )}
+
+        {fetcher.data &&
+          "flowError" in fetcher.data &&
+          fetcher.data.flowError && (
+            <s-banner tone="warning" heading="Flow trigger failed">
+              <s-paragraph>{fetcher.data.flowError}</s-paragraph>
+            </s-banner>
+          )}
+
+        {fetcher.data &&
           "applied" in fetcher.data &&
           typeof fetcher.data.applied === "number" && (
             <s-banner
@@ -412,7 +457,11 @@ export default function FeedMapping() {
                   <s-stack direction="inline" gap="small-200">
                     <fetcher.Form method="post">
                       <input type="hidden" name="intent" value="toggleOwner" />
-                      <input type="hidden" name="mappingId" value={mapping.id} />
+                      <input
+                        type="hidden"
+                        name="mappingId"
+                        value={mapping.id}
+                      />
                       <s-button type="submit">
                         Switch to{" "}
                         {mapping.owner === "supplier" ? "merchant" : "supplier"}
@@ -421,7 +470,11 @@ export default function FeedMapping() {
 
                     <fetcher.Form method="post">
                       <input type="hidden" name="intent" value="unmap" />
-                      <input type="hidden" name="mappingId" value={mapping.id} />
+                      <input
+                        type="hidden"
+                        name="mappingId"
+                        value={mapping.id}
+                      />
                       <s-button type="submit" tone="critical">
                         Remove
                       </s-button>
@@ -503,10 +556,9 @@ export default function FeedMapping() {
               ambiguous, {lastShadow.rowsInvalid} invalid
             </s-text>
             <s-text>
-              {lastShadow.fieldsChanged} would change —{" "}
-              {lastShadow.fieldsSafe} safe, {lastShadow.fieldsReview} review,{" "}
-              {lastShadow.fieldsHigh} high risk. {lastShadow.fieldsBlocked}{" "}
-              blocked by ownership.
+              {lastShadow.fieldsChanged} would change — {lastShadow.fieldsSafe}{" "}
+              safe, {lastShadow.fieldsReview} review, {lastShadow.fieldsHigh}{" "}
+              high risk. {lastShadow.fieldsBlocked} blocked by ownership.
             </s-text>
 
             {lastShadow.appliedAt && (
@@ -545,7 +597,8 @@ export default function FeedMapping() {
                 )}
 
                 <s-button type="submit" tone="critical" loading={isBusy}>
-                  Apply all {lastShadow.fieldsChanged} change(s), including risky
+                  Apply all {lastShadow.fieldsChanged} change(s), including
+                  risky
                 </s-button>
               </fetcher.Form>
             </s-stack>
