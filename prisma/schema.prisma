@@ -60,8 +60,9 @@ model FeedConnection {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  runs     FeedRun[]
-  mappings FieldMapping[]
+  runs       FeedRun[]
+  mappings   FieldMapping[]
+  shadowRuns ShadowRun[]
 
   @@index([shop])
 }
@@ -124,4 +125,68 @@ model FieldMapping {
 
   @@unique([feedId, targetField])
   @@index([feedId])
+}
+
+/// One shadow-mode evaluation of a feed against the live catalogue.
+///
+/// Recorded rather than computed on demand so a merchant can review, leave,
+/// and come back — and so the eventual apply step acts on a concrete
+/// artefact rather than re-deriving the diff and risking a different answer
+/// against a catalogue that moved in between.
+model ShadowRun {
+  id     String @id @default(uuid())
+  feedId String
+  shop   String
+
+  /// running | completed | failed
+  status String @default("running")
+
+  rowsInFeed    Int @default(0)
+  rowsMatched   Int @default(0)
+  rowsUnmatched Int @default(0)
+  rowsAmbiguous Int @default(0)
+  rowsInvalid   Int @default(0)
+
+  fieldsChanged   Int @default(0)
+  fieldsUnchanged Int @default(0)
+  fieldsBlocked   Int @default(0)
+
+  error String?
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  feed    FeedConnection @relation(fields: [feedId], references: [id], onDelete: Cascade)
+  changes ShadowChange[]
+
+  @@index([feedId, startedAt])
+}
+
+/// One proposed field change, or one reason a row could not produce any.
+///
+/// Rows that fail to match or coerce are recorded rather than skipped. A
+/// silent skip is how a feed appears to sync successfully while ignoring a
+/// third of the catalogue.
+model ShadowChange {
+  id          String @id @default(uuid())
+  shadowRunId String
+
+  sku String
+
+  /// Null when the row could not be matched to a variant.
+  variantGid String?
+  productGid String?
+
+  targetField   String
+  currentValue  String?
+  proposedValue String?
+
+  /// changed | unchanged | blocked | unmatched | ambiguous | invalid
+  verdict String
+
+  note String?
+
+  shadowRun ShadowRun @relation(fields: [shadowRunId], references: [id], onDelete: Cascade)
+
+  @@index([shadowRunId, verdict])
 }

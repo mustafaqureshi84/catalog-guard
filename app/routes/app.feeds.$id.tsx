@@ -3,21 +3,23 @@ import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { TARGET_FIELDS, typeForField } from "../lib/coerce";
+import { runShadow } from "../lib/shadow";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-
-  console.log("[feeds.$id] loader start — id:", params.id, "shop:", session.shop);
 
   const feed = await prisma.feedConnection.findFirst({
     where: { id: params.id, shop: session.shop },
     include: {
       mappings: { orderBy: { createdAt: "asc" } },
       runs: { orderBy: { startedAt: "desc" }, take: 1 },
+      shadowRuns: {
+        orderBy: { startedAt: "desc" },
+        take: 1,
+        include: { changes: { take: 200 } },
+      },
     },
   });
-
-  console.log("[feeds.$id] feed:", feed ? feed.name : "NOT FOUND");
 
   if (!feed) {
     throw new Response("Feed not found", { status: 404 });
@@ -25,13 +27,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const columns = feed.runs[0]?.columnNames?.split(",") ?? [];
 
-  console.log("[feeds.$id] columns:", columns);
-
   return { feed, columns };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const feed = await prisma.feedConnection.findFirst({
     where: { id: params.id, shop: session.shop },
@@ -97,6 +97,76 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { toggled: true };
   }
 
+  if (intent === "shadow") {
+    const mappings = await prisma.fieldMapping.findMany({
+      where: { feedId: feed.id },
+    });
+
+    if (mappings.length === 0) {
+      return {
+        error: "Map at least the SKU column before running shadow mode.",
+      };
+    }
+
+    const shadowRun = await prisma.shadowRun.create({
+      data: { feedId: feed.id, shop: session.shop },
+    });
+
+    try {
+      const response = await fetch(feed.url, {
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Feed returned ${response.status}`);
+      }
+
+      const csvText = await response.text();
+      const result = await runShadow(admin, csvText, mappings);
+
+      await prisma.shadowChange.createMany({
+        data: result.changes.map((c) => ({
+          shadowRunId: shadowRun.id,
+          sku: c.sku,
+          variantGid: c.variantGid,
+          productGid: c.productGid,
+          targetField: c.targetField,
+          currentValue: c.currentValue,
+          proposedValue: c.proposedValue,
+          verdict: c.verdict,
+          note: c.note,
+        })),
+      });
+
+      await prisma.shadowRun.update({
+        where: { id: shadowRun.id },
+        data: {
+          status: "completed",
+          rowsInFeed: result.rowsInFeed,
+          rowsMatched: result.rowsMatched,
+          rowsUnmatched: result.rowsUnmatched,
+          rowsAmbiguous: result.rowsAmbiguous,
+          rowsInvalid: result.rowsInvalid,
+          fieldsChanged: result.fieldsChanged,
+          fieldsUnchanged: result.fieldsUnchanged,
+          fieldsBlocked: result.fieldsBlocked,
+          finishedAt: new Date(),
+        },
+      });
+
+      return { shadowComplete: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+
+      await prisma.shadowRun.update({
+        where: { id: shadowRun.id },
+        data: { status: "failed", error: message, finishedAt: new Date() },
+      });
+
+      return { error: message };
+    }
+  }
+
   return { error: `Unknown intent: ${intent}` };
 };
 
@@ -109,6 +179,8 @@ export default function FeedMapping() {
   const availableTargets = TARGET_FIELDS.filter(
     (f) => !mappedTargets.has(f.value),
   );
+
+  const lastShadow = feed.shadowRuns[0];
 
   return (
     <s-page>
@@ -218,6 +290,63 @@ export default function FeedMapping() {
               </s-box>
             ))}
           </s-stack>
+        </s-section>
+      )}
+
+      {feed.mappings.length > 0 && (
+        <s-section heading="Shadow mode">
+          <s-paragraph>
+            Compares the feed against your catalogue and reports what would
+            change. Nothing is written.
+          </s-paragraph>
+
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="shadow" />
+            <s-button type="submit" variant="primary" loading={isBusy}>
+              Run shadow mode
+            </s-button>
+          </fetcher.Form>
+        </s-section>
+      )}
+
+      {lastShadow && (
+        <s-section heading="Last shadow run">
+          <s-stack direction="block" gap="small-200">
+            <s-text>
+              {lastShadow.rowsInFeed} rows — {lastShadow.rowsMatched} matched,{" "}
+              {lastShadow.rowsUnmatched} unmatched, {lastShadow.rowsAmbiguous}{" "}
+              ambiguous, {lastShadow.rowsInvalid} invalid
+            </s-text>
+            <s-text>
+              {lastShadow.fieldsChanged} field(s) would change,{" "}
+              {lastShadow.fieldsUnchanged} unchanged, {lastShadow.fieldsBlocked}{" "}
+              blocked by ownership
+            </s-text>
+
+            {lastShadow.error && (
+              <s-text tone="critical">{lastShadow.error}</s-text>
+            )}
+          </s-stack>
+
+          {lastShadow.changes.length > 0 && (
+            <s-box
+              padding="base"
+              borderWidth="base"
+              borderRadius="base"
+              background="subdued"
+            >
+              <pre style={{ margin: 0, overflow: "auto" }}>
+                <code>
+                  {lastShadow.changes
+                    .map(
+                      (c) =>
+                        `${c.verdict.padEnd(10)} ${c.sku.padEnd(14)} ${c.targetField.padEnd(16)} ${c.currentValue ?? "—"} → ${c.proposedValue ?? "—"}${c.note ? `  (${c.note})` : ""}`,
+                    )
+                    .join("\n")}
+                </code>
+              </pre>
+            </s-box>
+          )}
         </s-section>
       )}
     </s-page>
