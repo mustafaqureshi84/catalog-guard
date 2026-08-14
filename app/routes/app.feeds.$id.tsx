@@ -359,7 +359,7 @@ export default function FeedMapping() {
           fetcher.data.flowFired && (
             <s-banner tone="info" heading="Flow notified">
               <s-paragraph>
-                A "dangerous change detected" event was sent to Shopify Flow.
+                A &quot;dangerous change detected&quot; event was sent to Shopify Flow.
               </s-paragraph>
             </s-banner>
           )}

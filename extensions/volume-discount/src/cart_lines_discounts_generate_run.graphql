@@ -23,5 +23,10 @@ query CartInput {
   }
   discount {
     discountClasses
+    # Configuration written by the settings UI. A function cannot fetch
+    # anything at runtime, so this is the only way merchant settings reach it.
+    metafield(namespace: "$app", key: "function-configuration") {
+      value
+    }
   }
 }
