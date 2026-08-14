@@ -1,237 +1,183 @@
-# Shopify App Template - React Router
+# Catalog Guard
 
-This is a template for building a [Shopify app](https://shopify.dev/docs/apps/getting-started) using [React Router](https://reactrouter.com/). It was forked from the [Shopify Remix app template](https://github.com/Shopify/shopify-app-template-remix) and converted to React Router.
+A Shopify app for syncing supplier feeds into a merchant's catalogue — with the guard rails that make automation trustworthy at scale.
 
-Rather than cloning this repo, follow the [Quick Start steps](https://github.com/Shopify/shopify-app-template-react-router#quick-start).
+Feed sync itself is a commodity; several apps do it. The problem this solves is different: **a merchant will not hand four thousand products to automation unless they can say what it is allowed to touch, see what it intends to do, and be stopped when a supplier sends something wrong.**
 
-Visit the [`shopify.dev` documentation](https://shopify.dev/docs/api/shopify-app-react-router) for more details on the React Router app package.
+## What it does
 
-## Upgrading from Remix
+**Field ownership.** The merchant declares who controls each Shopify field. The supplier owns price and stock; the merchant owns titles and descriptions. A feed containing a title column is refused that column, and the refusal is visible in the diff rather than silent.
 
-If you have an existing Remix app that you want to upgrade to React Router, please follow the [upgrade guide](https://github.com/Shopify/shopify-app-template-react-router/wiki/Upgrading-from-Remix). Otherwise, please follow the quick start guide below.
+**Shadow mode.** Fetch the feed, match rows against the live catalogue, and report exactly what would change — writing nothing. Unmatched SKUs, ambiguous matches, and unparseable values are all reported rather than skipped.
 
-## Quick start
+**Risk scoring.** Every proposed change is graded against per-feed thresholds. A price moving 21% needs review; a price moving 92% is high risk, with the reason in plain language.
+
+**Circuit breaker.** When too large a share of matched rows is high risk, the run is blocked. One bad price is a mistake; four hundred is a broken file.
+
+**Selective apply.** Safe changes are written; risky ones are held. The merchant reviews a handful rather than approving in bulk.
+
+**Flow integration.** Dangerous runs emit a custom trigger, so merchants can build their own workflows on top — alert a channel, tag affected products, pause a sales channel.
+
+## Stack
+
+- **React Router 7** (Shopify app template) with server-side rendering
+- **TypeScript**, strict
+- **Prisma 6** + SQLite for sessions and app data
+- **Polaris web components** and App Bridge for the embedded UI
+- **Papaparse** for CSV
+- **Shopify Admin GraphQL API** `2026-07`, webhooks `2026-10`
+- **Flow trigger extension** for custom events
+
+## Setup
 
 ### Prerequisites
 
-Before you begin, you'll need to [download and install the Shopify CLI](https://shopify.dev/docs/apps/tools/cli/getting-started) if you haven't already.
+- Node.js 22 LTS
+- A Shopify Partner account and a development store
+- Shopify CLI
 
-### Setup
+### Install
 
-```shell
-shopify app init --template=https://github.com/Shopify/shopify-app-template-react-router
+```bash
+npm install
+npx prisma migrate deploy
+npx prisma generate
 ```
 
-### Local Development
+### Run
 
-```shell
-shopify app dev
+```bash
+npm run dev
 ```
 
-Press P to open the URL to your app. Once you click install, you can start development.
+The CLI provides its own tunnel and updates `application_url` automatically. Press `p` to open the app in the admin.
 
-Local development is powered by [the Shopify CLI](https://shopify.dev/docs/apps/tools/cli). It logs into your account, connects to an app, provides environment variables, updates remote config, creates a tunnel and provides commands to generate extensions.
+### Deploy extensions
 
-### Authenticating and querying data
-
-To authenticate and query data you can use the `shopify` const that is exported from `/app/shopify.server.js`:
-
-```js
-export async function loader({ request }) {
-  const { admin } = await shopify.authenticate.admin(request);
-
-  const response = await admin.graphql(`
-    {
-      products(first: 25) {
-        nodes {
-          title
-          description
-        }
-      }
-    }`);
-
-  const {
-    data: {
-      products: { nodes },
-    },
-  } = await response.json();
-
-  return nodes;
-}
+```bash
+npm run shopify app deploy
 ```
 
-This template comes pre-configured with examples of:
+Scopes live in `shopify.app.toml`, not the Dev Dashboard, and are pushed on deploy. Config is therefore in version control and diffable, unlike a web form.
 
-1. Setting up your Shopify app in [/app/shopify.server.ts](https://github.com/Shopify/shopify-app-template-react-router/blob/main/app/shopify.server.ts)
-2. Querying data using Graphql. Please see: [/app/routes/app.\_index.tsx](https://github.com/Shopify/shopify-app-template-react-router/blob/main/app/routes/app._index.tsx).
-3. Responding to webhooks. Please see [/app/routes/webhooks.tsx](https://github.com/Shopify/shopify-app-template-react-router/blob/main/app/routes/webhooks.app.uninstalled.tsx).
-4. Using metafields, metaobjects, and declarative custom data definitions. Please see [/app/routes/app.\_index.tsx](https://github.com/Shopify/shopify-app-template-react-router/blob/main/app/routes/app._index.tsx) and [shopify.app.toml](https://github.com/Shopify/shopify-app-template-react-router/blob/main/shopify.app.toml).
+## Structure
 
-Please read the [documentation for @shopify/shopify-app-react-router](https://shopify.dev/docs/api/shopify-app-react-router) to see what other API's are available.
+| File | Responsibility |
+|---|---|
+| `app/lib/coerce.ts` | CSV string → typed value, refusing rather than guessing |
+| `app/lib/risk.ts` | Threshold grading and the run-level circuit breaker |
+| `app/lib/shadow.ts` | The diff engine: SKU matching, ownership, coercion, classification |
+| `app/lib/apply.ts` | Writes approved changes, grouped by product |
+| `app/lib/flow.ts` | Fires the custom Flow trigger |
+| `app/routes/app.feeds._index.tsx` | Feed list: add, fetch, parse, delete |
+| `app/routes/app.feeds.$id.tsx` | Mapping, policy, shadow mode, apply |
+| `app/routes/app.tsx` | Layout, App Bridge provider, admin sidebar nav |
+| `extensions/dangerous-change-detected/` | Flow trigger declaration |
+| `prisma/schema.prisma` | Sessions plus feeds, mappings, policies, runs, changes |
 
-## Shopify Dev MCP
+## Data model
 
-This template is configured with the Shopify Dev MCP. This instructs [Cursor](https://cursor.com/), [GitHub Copilot](https://github.com/features/copilot) and [Claude Code](https://claude.com/product/claude-code) and [Google Gemini CLI](https://github.com/google-gemini/gemini-cli) to use the Shopify Dev MCP.
+Eight tables beyond the template's `Session`.
 
-For more information on the Shopify Dev MCP please read [the documentation](https://shopify.dev/docs/apps/build/devmcp).
+**Everything is scoped by `shop`.** One deployment serves many stores, so every query filters by shop — including deletes that already have a uuid. An id-only lookup would let one merchant reach another's data by guessing.
 
-## Deployment
+**`FieldMapping` has a unique constraint on `(feedId, targetField)`.** Only one supplier column may claim a Shopify field. Two columns competing for one target is a conflict with no obvious resolution, so it is rejected at the schema level rather than resolved at write time.
 
-### Application Storage
+**`ShadowRun` and `ShadowChange` are recorded, not computed on demand.** A merchant can review, leave, and come back — and the apply step acts on a concrete artefact rather than re-deriving the diff against a catalogue that moved in between.
 
-This template uses [Prisma](https://www.prisma.io/) to store session data, by default using an [SQLite](https://www.sqlite.org/index.html) database.
-The database is defined as a Prisma schema in `prisma/schema.prisma`.
+**Rows that fail are recorded, not skipped.** Unmatched, ambiguous, and uncoercible rows all produce a `ShadowChange` with a reason. A silent skip is how a feed appears to sync successfully while ignoring a third of the catalogue.
 
-This use of SQLite works in production if your app runs as a single instance.
-The database that works best for you depends on the data your app needs and how it is queried.
-Here’s a short list of databases providers that provide a free tier to get started:
+**`FeedRun` records failures as well as successes.** A feed that quietly stopped updating is the failure merchants notice last and care about most.
 
-| Database   | Type             | Hosters                                                                                                                                                                                                                                    |
-| ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| MySQL      | SQL              | [Digital Ocean](https://www.digitalocean.com/products/managed-databases-mysql), [Planet Scale](https://planetscale.com/), [Amazon Aurora](https://aws.amazon.com/rds/aurora/), [Google Cloud SQL](https://cloud.google.com/sql/docs/mysql) |
-| PostgreSQL | SQL              | [Digital Ocean](https://www.digitalocean.com/products/managed-databases-postgresql), [Amazon Aurora](https://aws.amazon.com/rds/aurora/), [Google Cloud SQL](https://cloud.google.com/sql/docs/postgres)                                   |
-| Redis      | Key-value        | [Digital Ocean](https://www.digitalocean.com/products/managed-databases-redis), [Amazon MemoryDB](https://aws.amazon.com/memorydb/)                                                                                                        |
-| MongoDB    | NoSQL / Document | [Digital Ocean](https://www.digitalocean.com/products/managed-databases-mongodb), [MongoDB Atlas](https://www.mongodb.com/atlas/database)                                                                                                  |
+## Design notes
 
-To use one of these, you can use a different [datasource provider](https://www.prisma.io/docs/reference/api-reference/prisma-schema-reference#datasource) in your `schema.prisma` file, or a different [SessionStorage adapter package](https://github.com/Shopify/shopify-api-js/blob/main/packages/shopify-api/docs/guides/session-storage.md).
+### Trust
 
-### Build
+**Ownership is declared, not inferred.** The app cannot know whether a merchant wants supplier titles. Asking once and enforcing it thereafter is the entire reason this is installable on a real catalogue.
 
-Build the app by running the command below with the package manager of your choice:
+**Refusals are visible.** A blocked field still appears in the diff showing what the supplier asked for and why it was refused. Silence would leave the merchant unable to tell whether their supplier is sending prices at all.
 
-Using yarn:
+**Ambiguous matches are skipped, not resolved.** Shopify does not enforce SKU uniqueness, so one SKU matching two variants is a real case. Applying to both is unrecoverable if wrong — two variants would hold a bad value with nothing recording which was intended. Skipping costs one manual fix and loses nothing.
 
-```shell
-yarn build
-```
+**Coercion refuses rather than defaults.** A parser that turns `"N/A"` into `0` will zero out inventory across thousands of SKUs and report success. Values that cannot be parsed produce an error the caller must handle. `"$1,299.00"` is cleaned to a number, but a value still containing a comma afterwards is rejected — `"1,5"` could mean 1.5 or 15, and guessing wrong on a price is worse than refusing.
 
-Using npm:
+**The circuit breaker gates risk, not everything.** A blocked run still permits changes the policy graded as safe. Blocking those too would train merchants to reach for the override, which is the opposite of what a breaker is for.
 
-```shell
-npm run build
-```
+**The override requires typing the affected row count.** A one-click bypass returns you to where you started; friction proportional to blast radius does not.
 
-Using pnpm:
+**Risk scoring is threshold rules, not anomaly detection.** A new install has no baseline of what normal looks like for a supplier. Rules are honest about what they are, and a merchant can reason about "more than 20%" in a way they cannot about a model's opinion.
 
-```shell
-pnpm run build
-```
+**Zero stock is graded separately from a percentage.** A drop from 4 to 0 is only 100%, but the product stops selling — a consequence a percentage threshold does not capture.
 
-## Hosting
+**The Flow trigger fires only when something warrants it.** A trigger that fires on every run trains merchants to ignore it, which is worse than not having one.
 
-When you're ready to set up your app in production, you can follow [our deployment documentation](https://shopify.dev/docs/apps/launch/deployment) to host it externally. From there, you have a few options:
+### Engineering
 
-- [Google Cloud Run](https://shopify.dev/docs/apps/launch/deployment/deploy-to-google-cloud-run): This tutorial is written specifically for this example repo, and is compatible with the extended steps included in the subsequent [**Build your app**](tutorial) in the **Getting started** docs. It is the most detailed tutorial for taking a React Router-based Shopify app and deploying it to production. It includes configuring permissions and secrets, setting up a production database, and even hosting your apps behind a load balancer across multiple regions.
-- [Fly.io](https://fly.io/docs/js/shopify/): Leverages the Fly.io CLI to quickly launch Shopify apps to a single machine.
-- [Render](https://render.com/docs/deploy-shopify-app): This tutorial guides you through using Docker to deploy and install apps on a Dev store.
-- [Manual deployment guide](https://shopify.dev/docs/apps/launch/deployment/deploy-to-hosting-service): This resource provides general guidance on the requirements of deployment including environment variables, secrets, and persistent data.
+**Values are compared as the type they will be written as.** `"89.99"` and `"89.9900"` are the same price; a string comparison would call them different, producing a change that writes nothing and a diff full of noise the merchant learns to ignore.
 
-When you reach the step for [setting up environment variables](https://shopify.dev/docs/apps/deployment/web#set-env-vars), you also need to set the variable `NODE_ENV=production`.
+**Writes are grouped by product.** `productVariantsBulkUpdate` takes a product ID and a list of its variants, so changes are batched rather than sent one at a time — which also avoids two requests fighting over the same product.
 
-## Gotchas / Troubleshooting
+**A failed Flow notification does not fail the shadow run.** The diff is the valuable artefact; the event is a convenience on top of it.
 
-### Database tables don't exist
+**`userErrors` is checked on every mutation.** A rejected mutation returns HTTP 200 with a null payload and the reason in `userErrors`. Reading the result without checking produces a TypeError twenty lines later instead of the actual message — which is what the Shopify template ships with, and how deleting an unused metafield definition from `shopify.app.toml` surfaced as `Cannot read properties of null`.
 
-If you get an error like:
+## Platform findings
 
-```
-The table `main.Session` does not exist in the current database.
-```
+Verified against a live development store, not taken from documentation.
 
-Create the database for Prisma. Run the `setup` script in `package.json` using `npm`, `yarn` or `pnpm`.
+**`flatRoutes` nests on dots.** A file at `app.feeds.tsx` becomes the **parent layout** for `app.feeds.$id.tsx`, and a parent renders its child only if it contains `<Outlet />`. Without one, navigating to the child changes the URL and renders the parent — a symptom that looks nothing like a routing problem. Renaming to `app.feeds._index.tsx` makes them siblings.
 
-### Navigating/redirecting breaks an embedded app
+**React's `onClick` does not reliably bind to Polaris web components.** A button using `onClick` produced no network request at all, while `type="submit"` buttons inside forms worked throughout — native browser behaviour with no React listener involved. Navigation between routes uses a form GET rather than a handler.
 
-Embedded apps must maintain the user session, which can be tricky inside an iFrame. To avoid issues:
+**`s-app-nav` renders into the admin's sidebar, not the app iframe.** Nav links appear under the app's entry in Shopify's left menu, nowhere in the app's own page area.
 
-1. Use `Link` from `react-router` or `@shopify/polaris`. Do not use `<a>`.
-2. Use `redirect` returned from `authenticate.admin`. Do not use `redirect` from `react-router`
-3. Use `useSubmit` from `react-router`.
+**Flow trigger field keys accept only alphabetic characters and spaces.** No underscores, no digits. The keys are shown to merchants verbatim in the condition builder, so the constraint is a naming convention rather than an arbitrary limit.
 
-This only applies if your app is embedded, which it will be by default.
+**Flow trigger descriptions are capped at 140 characters.**
 
-### Webhooks: shop-specific webhook subscriptions aren't updated
+**Flow trigger property types are fixed at declaration and silently constrain what merchants can build.** A count declared as `single_line_text_field` produces a trigger that fires correctly, populates the property, and runs the workflow — but offers only string operators. A merchant can check `equals "5"` and cannot check `greater than 3`, which is the condition anyone would actually want. Nothing observable is broken; the only symptom is a missing operator in a dropdown. Available types include `number_decimal`, `boolean`, `email`, `url`, and `single_line_text_field`. There is no integer type.
 
-If you are registering webhooks in the `afterAuth` hook, using `shopify.registerWebhooks`, you may find that your subscriptions aren't being updated.
+**Config and code are coupled with no warning.** Deleting the template's demo metafield definition from `shopify.app.toml` broke a mutation in a `.tsx` file that referenced it.
 
-Instead of using the `afterAuth` hook declare app-specific webhooks in the `shopify.app.toml` file. This approach is easier since Shopify will automatically sync changes every time you run `deploy` (e.g: `npm run deploy`). Please read these guides to understand more:
+**Cloudflare quick tunnels are not stable across a long session.** Three deaths during one session produced symptoms indistinguishable from code bugs — clicks reaching nothing while the page kept rendering its last state. When several fixes in a row change nothing, verify the environment before writing more code.
 
-1. [app-specific vs shop-specific webhooks](https://shopify.dev/docs/apps/build/webhooks/subscribe#app-specific-subscriptions)
-2. [Create a subscription tutorial](https://shopify.dev/docs/apps/build/webhooks/subscribe/get-started?deliveryMethod=https)
+**Prisma's VS Code extension and the installed CLI can disagree.** The v7 extension flags `url` in a datasource block as unsupported while the installed v6.19 CLI accepts it. The migration succeeding settles it.
 
-If you do need shop-specific webhooks, keep in mind that the package calls `afterAuth` in 2 scenarios:
+**Windows cannot replace a DLL a running process holds.** `prisma generate` fails with `EPERM` while the dev server is up. Stop it first.
 
-- After installing the app
-- When an access token expires
+## Known limitations
 
-During normal development, the app won't need to re-authenticate most of the time, so shop-specific subscriptions aren't updated. To force your app to update the subscriptions, uninstall and reinstall the app. Revisiting the app will call the `afterAuth` hook.
+1. **Inventory writes are not implemented.** Inventory lives on `InventoryLevel` per location, not on the variant, and writing it needs `inventorySetQuantities` with an explicit location. `applyChanges` refuses those changes with that reason rather than silently dropping them.
 
-### Webhooks: Admin created webhook failing HMAC validation
+2. **The merchant supplies a URL the server fetches.** That is a server-side request forgery surface — a URL pointing at cloud metadata or an internal service would be fetched with this server's credentials and network access. Only an `https://` scheme check exists; production needs private-IP blocking and an allowlist.
 
-Webhooks subscriptions created in the [Shopify admin](https://help.shopify.com/en/manual/orders/notifications/webhooks) will fail HMAC validation. This is because the webhook payload is not signed with your app's secret key.
+3. **CSV only.** XML, JSON, FTP/SFTP, and Google Sheets are roadmap items. The parsing layer is the only part that differs.
 
-The recommended solution is to use [app-specific webhooks](https://shopify.dev/docs/apps/build/webhooks/subscribe#app-specific-subscriptions) defined in your toml file instead. Test your webhooks by triggering events manually in the Shopify admin(e.g. Updating the product title to trigger a `PRODUCTS_UPDATE`).
+4. **No scheduling.** Feeds are fetched and evaluated on demand. A production version would run on a schedule with alerting.
 
-### Webhooks: Admin object undefined on webhook events triggered by the CLI
+5. **No rollback.** Applied changes cannot be reversed from within the app. Reversing safely requires versioned per-field history and a merge strategy for concurrent edits.
 
-When you trigger a webhook event using the Shopify CLI, the `admin` object will be `undefined`. This is because the CLI triggers an event with a valid, but non-existent, shop. The `admin` object is only available when the webhook is triggered by a shop that has installed the app. This is expected.
+6. **SQLite.** Fine for a single-instance development app; a deployed multi-tenant app needs Postgres.
 
-Webhooks triggered by the CLI are intended for initial experimentation testing of your webhook configuration. For more information on how to test your webhooks, see the [Shopify CLI documentation](https://shopify.dev/docs/apps/tools/cli/commands#webhook-trigger).
+7. **Risk thresholds are global per feed.** No per-product or per-collection overrides, and no supplier reliability score across runs.
 
-### Incorrect GraphQL Hints
+8. **No automated tests.** `coerce` and `assessRisk` are pure functions and the obvious first candidates — everything they guard against is a data-corruption failure that would be silent in production.
 
-By default the [graphql.vscode-graphql](https://marketplace.visualstudio.com/items?itemName=GraphQL.vscode-graphql) extension for will assume that GraphQL queries or mutations are for the [Shopify Admin API](https://shopify.dev/docs/api/admin). This is a sensible default, but it may not be true if:
+9. **Only one Flow trigger, and no custom actions.** A "feed failed" trigger and an action letting a workflow request a sync are natural extensions.
 
-1. You use another Shopify API such as the storefront API.
-2. You use a third party GraphQL API.
+10. **Shadow runs load all changes into memory.** Fine at hundreds of rows; a 50,000-row feed would need streaming and pagination in the UI.
 
-If so, please update [.graphqlrc.ts](https://github.com/Shopify/shopify-app-template-react-router/blob/main/.graphqlrc.ts).
+## Roadmap
 
-### Using Defer & await for streaming responses
+- Inventory writes via `inventorySetQuantities` with location selection
+- Scheduled fetch and evaluation, with alerting on blocked runs
+- Canary sync: apply to a subset, verify, then release the rest
+- Conflict-aware rollback
+- Supplier reliability scoring across runs
+- Additional feed formats
+- Custom Flow action so workflows can request a sync
+- Tests for `coerce` and `assessRisk`
 
-By default the CLI uses a cloudflare tunnel. Unfortunately cloudflare tunnels wait for the Response stream to finish, then sends one chunk. This will not affect production.
+## Related
 
-To test [streaming using await](https://reactrouter.com/api/components/Await#await) during local development we recommend [localhost based development](https://shopify.dev/docs/apps/build/cli-for-apps/networking-options#localhost-based-development).
-
-### "nbf" claim timestamp check failed
-
-This is because a JWT token is expired. If you are consistently getting this error, it could be that the clock on your machine is not in sync with the server. To fix this ensure you have enabled "Set time and date automatically" in the "Date and Time" settings on your computer.
-
-### Using MongoDB and Prisma
-
-If you choose to use MongoDB with Prisma, there are some gotchas in Prisma's MongoDB support to be aware of. Please see the [Prisma SessionStorage README](https://www.npmjs.com/package/@shopify/shopify-app-session-storage-prisma#mongodb).
-
-### Unable to require(`C:\...\query_engine-windows.dll.node`).
-
-Unable to require(`C:\...\query_engine-windows.dll.node`).
-The Prisma engines do not seem to be compatible with your system.
-
-query_engine-windows.dll.node is not a valid Win32 application.
-
-**Fix:** Set the environment variable:
-
-```shell
-PRISMA_CLIENT_ENGINE_TYPE=binary
-```
-
-This forces Prisma to use the binary engine mode, which runs the query engine as a separate process and can work via emulation on Windows ARM64.
-
-## Resources
-
-React Router:
-
-- [React Router docs](https://reactrouter.com/home)
-
-Shopify:
-
-- [Intro to Shopify apps](https://shopify.dev/docs/apps/getting-started)
-- [Shopify App React Router docs](https://shopify.dev/docs/api/shopify-app-react-router)
-- [Shopify CLI](https://shopify.dev/docs/apps/tools/cli)
-- [Shopify App Bridge](https://shopify.dev/docs/api/app-bridge-library).
-- [Polaris Web Components](https://shopify.dev/docs/api/app-home/polaris-web-components).
-- [App extensions](https://shopify.dev/docs/apps/app-extensions/list)
-- [Shopify Functions](https://shopify.dev/docs/api/functions)
-
-Internationalization:
-
-- [Internationalizing your app](https://shopify.dev/docs/apps/best-practices/internationalization/getting-started)
+Built alongside [shopify-automation](https://github.com/mustafaqureshi84/shopify-automation) — a headless integration layer covering bulk operations, adaptive rate limiting, webhook processing with a durable queue, idempotent handlers, and cross-system reconciliation. Several patterns here originate there, particularly the treatment of ambiguous outcomes and the preference for recording failures over skipping them.
