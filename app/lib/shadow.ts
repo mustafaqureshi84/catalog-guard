@@ -1,6 +1,12 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import Papa from "papaparse";
 import { coerce, type DataType } from "./coerce";
+import {
+  assessRisk,
+  assessRun,
+  type RiskLevel,
+  type RiskPolicySpec,
+} from "./risk";
 
 export interface MappingSpec {
   sourceColumn: string;
@@ -23,6 +29,8 @@ export interface ChangeRecord {
     | "unmatched"
     | "ambiguous"
     | "invalid";
+  risk: RiskLevel;
+  riskReason: string | null;
   note: string | null;
 }
 
@@ -35,6 +43,11 @@ export interface ShadowResult {
   fieldsChanged: number;
   fieldsUnchanged: number;
   fieldsBlocked: number;
+  fieldsSafe: number;
+  fieldsReview: number;
+  fieldsHigh: number;
+  runBlocked: boolean;
+  blockReason: string | null;
   changes: ChangeRecord[];
 }
 
@@ -71,8 +84,7 @@ const VARIANTS_BY_SKU = `#graphql
  * Looks up variants by SKU in batches.
  *
  * Shopify's search syntax allows OR-ing terms, so one query covers many SKUs
- * rather than one request each — the same batching instinct that took a
- * 500-round-trip database write down to one statement.
+ * rather than one request each.
  */
 async function fetchVariantsBySku(
   admin: AdminApiContext,
@@ -161,6 +173,7 @@ export async function runShadow(
   admin: AdminApiContext,
   csvText: string,
   mappings: MappingSpec[],
+  policy: RiskPolicySpec,
 ): Promise<ShadowResult> {
   const parsed = Papa.parse<Record<string, string>>(csvText, {
     header: true,
@@ -203,6 +216,11 @@ export async function runShadow(
     fieldsChanged: 0,
     fieldsUnchanged: 0,
     fieldsBlocked: 0,
+    fieldsSafe: 0,
+    fieldsReview: 0,
+    fieldsHigh: 0,
+    runBlocked: false,
+    blockReason: null,
     changes,
   };
 
@@ -219,6 +237,8 @@ export async function runShadow(
         currentValue: null,
         proposedValue: null,
         verdict: "invalid",
+        risk: "safe",
+        riskReason: null,
         note: "row has no SKU value",
       });
       continue;
@@ -236,6 +256,8 @@ export async function runShadow(
         currentValue: null,
         proposedValue: null,
         verdict: "unmatched",
+        risk: "safe",
+        riskReason: null,
         note: "no variant in this store has this SKU",
       });
       continue;
@@ -257,6 +279,8 @@ export async function runShadow(
         currentValue: null,
         proposedValue: null,
         verdict: "ambiguous",
+        risk: "safe",
+        riskReason: null,
         note: `${matches.length} variants share this SKU — skipped`,
       });
       continue;
@@ -280,6 +304,8 @@ export async function runShadow(
         currentValue: currentValueFor(variant, mapping.targetField),
         proposedValue: raw.trim(),
         verdict: "blocked",
+        risk: "safe",
+        riskReason: null,
         note: "merchant owns this field — the feed may not write it",
       });
     }
@@ -301,6 +327,8 @@ export async function runShadow(
           currentValue: currentValueFor(variant, mapping.targetField),
           proposedValue: raw.trim(),
           verdict: "invalid",
+          risk: "safe",
+          riskReason: null,
           note: coerced.error ?? "value could not be coerced",
         });
         continue;
@@ -319,12 +347,26 @@ export async function runShadow(
           currentValue: current,
           proposedValue: String(proposed),
           verdict: "unchanged",
+          risk: "safe",
+          riskReason: null,
           note: null,
         });
         continue;
       }
 
+      const assessment = assessRisk(
+        mapping.targetField,
+        current,
+        String(proposed),
+        policy,
+      );
+
       result.fieldsChanged += 1;
+
+      if (assessment.risk === "high") result.fieldsHigh += 1;
+      else if (assessment.risk === "review") result.fieldsReview += 1;
+      else result.fieldsSafe += 1;
+
       changes.push({
         sku,
         variantGid: variant.variantGid,
@@ -333,10 +375,16 @@ export async function runShadow(
         currentValue: current,
         proposedValue: String(proposed),
         verdict: "changed",
+        risk: assessment.risk,
+        riskReason: assessment.reason,
         note: null,
       });
     }
   }
+
+  const breaker = assessRun(result.fieldsHigh, result.rowsMatched, policy);
+  result.runBlocked = breaker.blocked;
+  result.blockReason = breaker.reason;
 
   return result;
 }

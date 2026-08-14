@@ -36,8 +36,7 @@ model Session {
 
 /// A supplier feed the merchant has connected.
 ///
-/// Scoped by `shop` because one deployment serves many stores — unlike the
-/// single-store scripts this project's sibling repo contains, every query
+/// Scoped by `shop` because one deployment serves many stores — every query
 /// here must filter by shop or one merchant sees another's data.
 model FeedConnection {
   id   String @id @default(uuid())
@@ -63,6 +62,7 @@ model FeedConnection {
   runs       FeedRun[]
   mappings   FieldMapping[]
   shadowRuns ShadowRun[]
+  riskPolicy RiskPolicy?
 
   @@index([shop])
 }
@@ -95,11 +95,6 @@ model FeedRun {
 /// Ownership is the point of the product. A merchant will not hand 4,000
 /// records to automation unless they can say "the supplier controls price
 /// and stock; nothing touches my titles."
-///
-/// The unique constraint on (feedId, targetField) allows only one supplier
-/// column per Shopify field. Two columns competing for the same target is a
-/// conflict with no obvious resolution, so it is rejected at the schema
-/// level rather than resolved at write time.
 model FieldMapping {
   id     String @id @default(uuid())
   feedId String
@@ -127,18 +122,47 @@ model FieldMapping {
   @@index([feedId])
 }
 
+/// Per-feed risk thresholds.
+///
+/// Deliberately rules, not anomaly detection. A new install has no baseline
+/// of what "normal" looks like for a supplier, and calling threshold checks
+/// anomaly detection would oversell what this actually does.
+model RiskPolicy {
+  id     String @id @default(uuid())
+  feedId String @unique
+
+  /// Percentage change beyond which a price change needs review.
+  priceChangePercent Int @default(20)
+
+  /// Percentage drop beyond which an inventory change needs review.
+  inventoryDropPercent Int @default(90)
+
+  /// Treat a drop to zero as high risk regardless of percentage — going
+  /// out of stock has consequences a percentage does not capture.
+  flagZeroInventory Boolean @default(true)
+
+  /// If more than this share of matched rows are high risk, block the whole
+  /// run. One bad price is a mistake; four hundred is a broken file, and
+  /// applying any of them is wrong.
+  blockRunAbovePercent Int @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  feed FeedConnection @relation(fields: [feedId], references: [id], onDelete: Cascade)
+}
+
 /// One shadow-mode evaluation of a feed against the live catalogue.
 ///
 /// Recorded rather than computed on demand so a merchant can review, leave,
-/// and come back — and so the eventual apply step acts on a concrete
-/// artefact rather than re-deriving the diff and risking a different answer
-/// against a catalogue that moved in between.
+/// and come back — and so the apply step acts on a concrete artefact rather
+/// than re-deriving the diff against a catalogue that moved in between.
 model ShadowRun {
   id     String @id @default(uuid())
   feedId String
   shop   String
 
-  /// running | completed | failed
+  /// running | completed | failed | applied
   status String @default("running")
 
   rowsInFeed    Int @default(0)
@@ -150,6 +174,19 @@ model ShadowRun {
   fieldsChanged   Int @default(0)
   fieldsUnchanged Int @default(0)
   fieldsBlocked   Int @default(0)
+
+  fieldsSafe   Int @default(0)
+  fieldsReview Int @default(0)
+  fieldsHigh   Int @default(0)
+
+  /// True when the circuit breaker tripped. Nothing may be applied without
+  /// an explicit override.
+  runBlocked  Boolean @default(false)
+  blockReason String?
+
+  appliedAt    DateTime?
+  appliedCount Int       @default(0)
+  applyError   String?
 
   error String?
 
@@ -184,9 +221,19 @@ model ShadowChange {
   /// changed | unchanged | blocked | unmatched | ambiguous | invalid
   verdict String
 
+  /// safe | review | high
+  risk String @default("safe")
+
+  /// Why this risk level was assigned, in the merchant's terms.
+  riskReason String?
+
+  /// Set when the change has been written to Shopify.
+  appliedAt DateTime?
+
   note String?
 
   shadowRun ShadowRun @relation(fields: [shadowRunId], references: [id], onDelete: Cascade)
 
   @@index([shadowRunId, verdict])
+  @@index([shadowRunId, risk])
 }

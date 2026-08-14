@@ -4,6 +4,8 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { TARGET_FIELDS, typeForField } from "../lib/coerce";
 import { runShadow } from "../lib/shadow";
+import { applyChanges } from "../lib/apply";
+import { DEFAULT_POLICY } from "../lib/risk";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -13,6 +15,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     include: {
       mappings: { orderBy: { createdAt: "asc" } },
       runs: { orderBy: { startedAt: "desc" }, take: 1 },
+      riskPolicy: true,
       shadowRuns: {
         orderBy: { startedAt: "desc" },
         take: 1,
@@ -27,7 +30,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const columns = feed.runs[0]?.columnNames?.split(",") ?? [];
 
-  return { feed, columns };
+  return { feed, columns, defaults: DEFAULT_POLICY };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -53,15 +56,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: "Column and target field are both required." };
     }
 
-    const dataType = typeForField(targetField);
-
     try {
       await prisma.fieldMapping.create({
-        data: { feedId: feed.id, sourceColumn, targetField, owner, dataType },
+        data: {
+          feedId: feed.id,
+          sourceColumn,
+          targetField,
+          owner,
+          dataType: typeForField(targetField),
+        },
       });
     } catch {
-      // The unique constraint on (feedId, targetField) rejects a second
-      // column claiming the same Shopify field.
       return {
         error: `${targetField} is already mapped. Remove the existing mapping first.`,
       };
@@ -71,20 +76,15 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "unmap") {
-    const mappingId = String(formData.get("mappingId"));
-
     await prisma.fieldMapping.deleteMany({
-      where: { id: mappingId, feedId: feed.id },
+      where: { id: String(formData.get("mappingId")), feedId: feed.id },
     });
-
     return { unmapped: true };
   }
 
   if (intent === "toggleOwner") {
-    const mappingId = String(formData.get("mappingId"));
-
     const mapping = await prisma.fieldMapping.findFirst({
-      where: { id: mappingId, feedId: feed.id },
+      where: { id: String(formData.get("mappingId")), feedId: feed.id },
     });
 
     if (!mapping) return { error: "Mapping not found." };
@@ -97,6 +97,30 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { toggled: true };
   }
 
+  if (intent === "policy") {
+    const values = {
+      priceChangePercent: Number(formData.get("priceChangePercent")),
+      inventoryDropPercent: Number(formData.get("inventoryDropPercent")),
+      blockRunAbovePercent: Number(formData.get("blockRunAbovePercent")),
+      flagZeroInventory: formData.get("flagZeroInventory") === "on",
+    };
+
+    if (
+      !Number.isInteger(values.priceChangePercent) ||
+      values.priceChangePercent < 1
+    ) {
+      return { error: "Price threshold must be a positive whole number." };
+    }
+
+    await prisma.riskPolicy.upsert({
+      where: { feedId: feed.id },
+      create: { feedId: feed.id, ...values },
+      update: values,
+    });
+
+    return { policySaved: true };
+  }
+
   if (intent === "shadow") {
     const mappings = await prisma.fieldMapping.findMany({
       where: { feedId: feed.id },
@@ -107,6 +131,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         error: "Map at least the SKU column before running shadow mode.",
       };
     }
+
+    const stored = await prisma.riskPolicy.findUnique({
+      where: { feedId: feed.id },
+    });
+
+    const policy = stored ?? DEFAULT_POLICY;
 
     const shadowRun = await prisma.shadowRun.create({
       data: { feedId: feed.id, shop: session.shop },
@@ -121,8 +151,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         throw new Error(`Feed returned ${response.status}`);
       }
 
-      const csvText = await response.text();
-      const result = await runShadow(admin, csvText, mappings);
+      const result = await runShadow(
+        admin,
+        await response.text(),
+        mappings,
+        policy,
+      );
 
       await prisma.shadowChange.createMany({
         data: result.changes.map((c) => ({
@@ -134,6 +168,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           currentValue: c.currentValue,
           proposedValue: c.proposedValue,
           verdict: c.verdict,
+          risk: c.risk,
+          riskReason: c.riskReason,
           note: c.note,
         })),
       });
@@ -150,6 +186,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           fieldsChanged: result.fieldsChanged,
           fieldsUnchanged: result.fieldsUnchanged,
           fieldsBlocked: result.fieldsBlocked,
+          fieldsSafe: result.fieldsSafe,
+          fieldsReview: result.fieldsReview,
+          fieldsHigh: result.fieldsHigh,
+          runBlocked: result.runBlocked,
+          blockReason: result.blockReason,
           finishedAt: new Date(),
         },
       });
@@ -167,11 +208,93 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "apply") {
+    const shadowRunId = String(formData.get("shadowRunId"));
+    const includeRisky = formData.get("includeRisky") === "yes";
+    const override = String(formData.get("override") ?? "").trim();
+
+    const shadowRun = await prisma.shadowRun.findFirst({
+      where: { id: shadowRunId, shop: session.shop },
+      include: { changes: true },
+    });
+
+    if (!shadowRun) return { error: "Shadow run not found." };
+
+    if (shadowRun.appliedAt) {
+      return { error: "This run has already been applied." };
+    }
+
+    /**
+     * The circuit breaker gates risky changes, not everything.
+     *
+     * A blocked run means the feed looks broken overall, but a change the
+     * policy graded as safe is still safe — refusing it as well would train
+     * merchants to reach for the override, which is the opposite of what a
+     * breaker is for.
+     */
+    if (shadowRun.runBlocked && includeRisky) {
+      if (override !== String(shadowRun.rowsMatched)) {
+        return {
+          error: `This run is blocked. To override and apply risky changes, type ${shadowRun.rowsMatched} in the confirmation field.`,
+        };
+      }
+    }
+
+    const eligible = shadowRun.changes.filter((c) => {
+      if (c.verdict !== "changed") return false;
+      if (c.appliedAt) return false;
+      if (includeRisky) return true;
+      return c.risk === "safe";
+    });
+
+    if (eligible.length === 0) {
+      return { error: "No eligible changes to apply." };
+    }
+
+    const result = await applyChanges(
+      admin,
+      eligible.map((c) => ({
+        id: c.id,
+        sku: c.sku,
+        variantGid: c.variantGid,
+        productGid: c.productGid,
+        targetField: c.targetField,
+        proposedValue: c.proposedValue,
+      })),
+    );
+
+    if (result.applied.length > 0) {
+      await prisma.shadowChange.updateMany({
+        where: { id: { in: result.applied } },
+        data: { appliedAt: new Date() },
+      });
+    }
+
+    await prisma.shadowRun.update({
+      where: { id: shadowRun.id },
+      data: {
+        status: "applied",
+        appliedAt: new Date(),
+        appliedCount: result.applied.length,
+        applyError:
+          result.failed.length > 0
+            ? JSON.stringify(result.failed.slice(0, 5))
+            : null,
+      },
+    });
+
+    return {
+      applied: result.applied.length,
+      failed: result.failed.length,
+      firstError: result.failed[0]?.error ?? null,
+    };
+  }
+
   return { error: `Unknown intent: ${intent}` };
 };
 
 export default function FeedMapping() {
-  const { feed, columns } = useLoaderData<typeof loader>();
+  const { feed, columns, defaults } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const isBusy = fetcher.state !== "idle";
@@ -180,6 +303,7 @@ export default function FeedMapping() {
     (f) => !mappedTargets.has(f.value),
   );
 
+  const policy = feed.riskPolicy ?? defaults;
   const lastShadow = feed.shadowRuns[0];
 
   return (
@@ -202,6 +326,23 @@ export default function FeedMapping() {
             <s-paragraph>{fetcher.data.error}</s-paragraph>
           </s-banner>
         )}
+
+        {fetcher.data &&
+          "applied" in fetcher.data &&
+          typeof fetcher.data.applied === "number" && (
+            <s-banner
+              tone={(fetcher.data.failed ?? 0) > 0 ? "warning" : "success"}
+              heading="Apply complete"
+            >
+              <s-paragraph>
+                {fetcher.data.applied} change(s) written,{" "}
+                {fetcher.data.failed ?? 0} failed.
+                {fetcher.data.firstError
+                  ? ` First error: ${fetcher.data.firstError}`
+                  : ""}
+              </s-paragraph>
+            </s-banner>
+          )}
       </s-section>
 
       {columns.length > 0 && availableTargets.length > 0 && (
@@ -293,6 +434,44 @@ export default function FeedMapping() {
         </s-section>
       )}
 
+      <s-section heading="Risk policy">
+        <s-paragraph>
+          Threshold rules, not anomaly detection. A change beyond a threshold
+          needs review; a change beyond double it is high risk.
+        </s-paragraph>
+
+        <fetcher.Form method="post">
+          <input type="hidden" name="intent" value="policy" />
+
+          <s-stack direction="block" gap="base">
+            <s-text-field
+              label="Price change threshold (%)"
+              name="priceChangePercent"
+              value={String(policy.priceChangePercent)}
+            />
+            <s-text-field
+              label="Inventory drop threshold (%)"
+              name="inventoryDropPercent"
+              value={String(policy.inventoryDropPercent)}
+            />
+            <s-text-field
+              label="Block run above this share of high-risk rows (%)"
+              name="blockRunAbovePercent"
+              value={String(policy.blockRunAbovePercent)}
+            />
+            <s-checkbox
+              name="flagZeroInventory"
+              label="Flag any drop to zero stock as high risk"
+              checked={policy.flagZeroInventory}
+            />
+
+            <s-button type="submit" loading={isBusy}>
+              Save policy
+            </s-button>
+          </s-stack>
+        </fetcher.Form>
+      </s-section>
+
       {feed.mappings.length > 0 && (
         <s-section heading="Shadow mode">
           <s-paragraph>
@@ -311,6 +490,12 @@ export default function FeedMapping() {
 
       {lastShadow && (
         <s-section heading="Last shadow run">
+          {lastShadow.runBlocked && (
+            <s-banner tone="critical" heading="Run blocked">
+              <s-paragraph>{lastShadow.blockReason}</s-paragraph>
+            </s-banner>
+          )}
+
           <s-stack direction="block" gap="small-200">
             <s-text>
               {lastShadow.rowsInFeed} rows — {lastShadow.rowsMatched} matched,{" "}
@@ -318,15 +503,53 @@ export default function FeedMapping() {
               ambiguous, {lastShadow.rowsInvalid} invalid
             </s-text>
             <s-text>
-              {lastShadow.fieldsChanged} field(s) would change,{" "}
-              {lastShadow.fieldsUnchanged} unchanged, {lastShadow.fieldsBlocked}{" "}
-              blocked by ownership
+              {lastShadow.fieldsChanged} would change —{" "}
+              {lastShadow.fieldsSafe} safe, {lastShadow.fieldsReview} review,{" "}
+              {lastShadow.fieldsHigh} high risk. {lastShadow.fieldsBlocked}{" "}
+              blocked by ownership.
             </s-text>
+
+            {lastShadow.appliedAt && (
+              <s-text tone="success">
+                Applied {lastShadow.appliedCount} change(s) at{" "}
+                {new Date(lastShadow.appliedAt).toLocaleString()}
+              </s-text>
+            )}
 
             {lastShadow.error && (
               <s-text tone="critical">{lastShadow.error}</s-text>
             )}
           </s-stack>
+
+          {!lastShadow.appliedAt && lastShadow.fieldsChanged > 0 && (
+            <s-stack direction="block" gap="base">
+              <fetcher.Form method="post">
+                <input type="hidden" name="intent" value="apply" />
+                <input type="hidden" name="shadowRunId" value={lastShadow.id} />
+                <input type="hidden" name="includeRisky" value="no" />
+                <s-button type="submit" variant="primary" loading={isBusy}>
+                  Apply {lastShadow.fieldsSafe} safe change(s)
+                </s-button>
+              </fetcher.Form>
+
+              <fetcher.Form method="post">
+                <input type="hidden" name="intent" value="apply" />
+                <input type="hidden" name="shadowRunId" value={lastShadow.id} />
+                <input type="hidden" name="includeRisky" value="yes" />
+
+                {lastShadow.runBlocked && (
+                  <s-text-field
+                    label={`Type ${lastShadow.rowsMatched} to override the block`}
+                    name="override"
+                  />
+                )}
+
+                <s-button type="submit" tone="critical" loading={isBusy}>
+                  Apply all {lastShadow.fieldsChanged} change(s), including risky
+                </s-button>
+              </fetcher.Form>
+            </s-stack>
+          )}
 
           {lastShadow.changes.length > 0 && (
             <s-box
@@ -340,7 +563,7 @@ export default function FeedMapping() {
                   {lastShadow.changes
                     .map(
                       (c) =>
-                        `${c.verdict.padEnd(10)} ${c.sku.padEnd(14)} ${c.targetField.padEnd(16)} ${c.currentValue ?? "—"} → ${c.proposedValue ?? "—"}${c.note ? `  (${c.note})` : ""}`,
+                        `${c.risk.padEnd(7)} ${c.verdict.padEnd(10)} ${c.sku.padEnd(14)} ${c.targetField.padEnd(14)} ${c.currentValue ?? "—"} → ${c.proposedValue ?? "—"}${c.riskReason ? `  (${c.riskReason})` : c.note ? `  (${c.note})` : ""}`,
                     )
                     .join("\n")}
                 </code>
