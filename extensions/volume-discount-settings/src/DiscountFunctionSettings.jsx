@@ -49,8 +49,6 @@ async function getMetafieldDefinition() {
 
   const result = await shopify.query(query);
 
-  console.log("[settings] lookup result:", JSON.stringify(result));
-
   return result?.data?.metafieldDefinitions?.nodes[0];
 }
 
@@ -80,8 +78,6 @@ async function createMetafieldDefinition() {
   `;
 
   const result = await shopify.query(query, {variables: {definition}});
-
-  console.log("[settings] create result:", JSON.stringify(result));
 
   return result?.data?.metafieldDefinitionCreate?.createdDefinition;
 }
